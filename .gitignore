@@ -1,0 +1,16 @@
+# Ignorer tous les fichiers de données NetCDF (très lourds)
+*.nc
+
+# Ignorer les dossiers de datasets entiers
+ClimSim_high-res/
+ClimSim_low-res/
+dataset_statistics/
+
+# Ignorer les dossiers de données ou checkpoints
+data/
+checkpoints/
+
+# Ignorer les fichiers temporaires Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
