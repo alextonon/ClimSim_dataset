@@ -1,5 +1,4 @@
 # Ignorer tous les fichiers de données NetCDF (très lourds)
-*.nc
 *.npy
 
 # Ignorer les dossiers de datasets entiers
