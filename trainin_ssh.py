@@ -27,6 +27,7 @@ class ClimSimMLP(nn.Module):
         # Hidden Layers: [768, 640, 512, 640, 640]
         self.layer1 = nn.Linear(input_dim, 768)
         self.layer2 = nn.Linear(768, 640)
+
         self.layer3 = nn.Linear(640, 512)
         self.layer4 = nn.Linear(512, 640)
         self.layer5 = nn.Linear(640, 640)
@@ -96,8 +97,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, input_dim, 
 
         inputs = inputs.view(-1, input_dim)  # Allow flattening for MLP
         targets = targets.view(-1, output_dim)
- 
-	indices = torch.randperm(inputs.size(0), device=device)
+    
+        indices = torch.randperm(inputs.size(0), device=device)
         inputs = inputs[indices]
         targets = targets[indices]
  
@@ -106,6 +107,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, input_dim, 
         loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
+
+
+        print(f"Pred Max: {outputs.max().item():.4f} | Target Max: {targets.max().item():.4f}")
         
         batch_size = inputs.size(0)
         total_loss += loss.item() * batch_size
@@ -448,6 +452,29 @@ test_loader = torch.utils.data.DataLoader(
     num_workers=4,
 )
 
+def check_normalization(loader, name="Train"):
+    inputs, targets = next(iter(train_loader))
+
+    # On redimensionne pour isoler les features (50 batches * 384 colonnes = 19200 lignes)
+    in_features = inputs.view(-1, model_dims["input_total"]) 
+    out_features = targets.view(-1, model_dims["output_tendancies"] + model_dims["output_surface"])
+
+    print(f"{'Variable Index':<15} | {'Mean':<10} | {'Std':<10}")
+    print("-" * 40)
+
+    # On regarde les 5 premières et 5 dernières variables
+    indices_to_check = list(range(5)) + list(range(in_features.shape[1]-5, in_features.shape[1]))
+
+    for i in indices_to_check:
+        m = in_features[:, i].mean().item()
+        s = in_features[:, i].std().item()
+        print(f"Input Feature {i:<3} | {m:>10.4f} | {s:>10.4f}")
+
+    # Alerte si le Std est trop loin de 1.0
+    if any(in_features.std(dim=0) > 2.0) or any(in_features.std(dim=0) < 0.5):
+        print("\n⚠️ KRITIQUE : Certaines variables d'entrée n'ont pas un Std de 1.0 !")
+
+check_normalization(train_loader, "Train")
 # %%
 for epoch in range(N_EPOCHS):
     train_loss = train_one_epoch(
