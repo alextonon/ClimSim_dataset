@@ -9,6 +9,7 @@ data/
 
 # Ignorer les dossiers de données ou checkpoints
 data/
+test_data/
 checkpoints/
 
 # Ignorer les fichiers temporaires Python
