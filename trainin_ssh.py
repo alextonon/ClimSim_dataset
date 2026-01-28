@@ -17,7 +17,9 @@ torch.device("cuda" if torch.cuda.is_available() else "cpu")
 LOW_RES_SAMPLE_PATH = "data/ClimSim_low-res/train/"
 LOW_RES_GRID_PATH = "data/ClimSim_low-res/ClimSim_low-res_grid-info.nc"
 ZARR_PATH = "data/ClimSim_low-res.zarr"
+NORM_PATH = "ClimSim/preprocessing/normalizations/"
 
+print("Imports done.")
 # %%
 class ClimSimMLP(nn.Module):
     def __init__(self, input_dim=556, output_tendancies_dim=120, output_surface_dim=8):
@@ -111,6 +113,17 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, input_dim, 
 
     return total_loss / total_samples
 
+# Pour reproduire le gagnant :
+n_layers = 5
+units = [768, 640, 512, 640, 640]
+hp_act = 'leakyrelu'
+hp_optimizer = 'RAdam'
+hp_batch_size = 3072
+
+vars_mli = ['state_t','state_q0001','state_ps','pbuf_SOLIN', 'pbuf_LHFLX', 'pbuf_SHFLX']
+vars_mlo = ['ptend_t','ptend_q0001','cam_out_NETSW','cam_out_FLWDS','cam_out_PRECSC',
+            'cam_out_PRECC','cam_out_SOLS','cam_out_SOLL','cam_out_SOLSD','cam_out_SOLLD']
+
 # %%
 
 import json
@@ -122,25 +135,46 @@ from torch.utils.data import Dataset
 
 
 class ClimSimZarrDataset(Dataset):
-    def __init__(self, zarr_path, grid_path, features, transform=None, stats=None):
+    def __init__(self, 
+                zarr_path, 
+                grid_path,
+                norm_path,
+                features,
+                normalize=True,
+                transform=None):
         self.zarr_path = zarr_path
 
         self.features = features
         self.features_list = self.__get_features__()
 
-        self.ds = xr.open_zarr(zarr_path)[self.features_list]# for testing purpose
+        self.ds = xr.open_zarr(zarr_path, chunks="auto")
+        self.setup_tendencies()
+        self.ds = self.ds[self.features_list]
+
         self.grid = xr.open_dataset(grid_path)
         self.transform = transform
         
-        if stats is not None and os.path.exists(stats):
-            self.stats = torch.load(stats)
-        else:
-            self.stats = None
+        self.input_mean = xr.open_dataset(norm_path + "inputs/input_mean.nc")
+        self.input_std = xr.open_dataset(norm_path + "inputs/input_std.nc")
+        self.output_scale = xr.open_dataset(norm_path + "outputs/output_scale.nc")
         
         self.length = self.ds.dims['sample']
         
         self.input_vars = [v for v in self.ds.data_vars if 'in' in v]
         self.output_vars = [v for v in self.ds.data_vars if 'out' in v]
+
+        if normalize:
+            self.normalize()
+
+    def setup_tendencies(self):    
+        timestep = 1200 # secondes
+        
+        self.ds['out_ptend_t'] = (self.ds['out_state_t'] - self.ds['in_state_t']) / timestep
+        self.ds['out_ptend_q0001'] = (self.ds['out_state_q0001'] - self.ds['in_state_q0001']) / timestep
+        self.ds['out_ptend_u'] = (self.ds['out_state_u'] - self.ds['in_state_u']) / timestep # U tendency [m/s/s]
+        self.ds['out_ptend_v'] = (self.ds['out_state_v'] - self.ds['in_state_v']) / timestep # V tendency [m/s/s]
+
+        self.target_list = ["out_ptend_t", "out_ptend_q0001", "out_ptend_u", "out_ptend_v"]
 
     def __len__(self):
         return self.length
@@ -170,10 +204,6 @@ class ClimSimZarrDataset(Dataset):
 
         x = torch.from_numpy(x_np)
         y = torch.from_numpy(y_np)
-
-        if self.stats is not None and normalize:
-            x = (x - self.stats["input_mean"]) / self.stats["input_std"]
-            y = (y - self.stats["target_mean"]) / self.stats["target_std"]
 
         return x, y
     
@@ -221,83 +251,41 @@ class ClimSimZarrDataset(Dataset):
             Subset(self, train_indices),
             Subset(self, test_indices)
         )
-        
-        
-    def __get_raw_item__(self, idx):
-        """Lit les données brutes sans aucune normalisation."""
-        sample = self.ds.isel(sample=idx)
 
-        def prepare_data(vars_list): # to put all data in (ncol, nfeatures) format to concatenate them
-            output_list = []
-            for var in vars_list:
-                data = sample[var].values # Peut être (60, 384) ou (384,)            
-                if data.ndim == 2:
-                    data = data.T # To make sure all start by (ncol,)
-                else:
-                    # C'est une variable de surface (ncol,) -> on veut (ncol, 1)
-                    data = data[:, np.newaxis]
-                
-                output_list.append(data)
         
-            # Now all data is (ncol, nfeatures) format
-            return np.concatenate(output_list, axis=1).astype(np.float32)
-
-        x = prepare_data(self.input_vars)  # Résultat: (384, 246)
-        y = prepare_data(self.output_vars) # Résultat: (384, 61)
-            
-        return torch.from_numpy(x), torch.from_numpy(y)
+    def normalize(self):
+        for var in self.input_vars:
+            var_name = var.replace("in_", "", 1)
+            self.ds[var_name] = (self.ds[var] - self.input_mean[var_name]) / self.input_std[var_name]
         
-    def compute_norm_stats(self, n_samples=1000, save=True):
-        print(f"Estimation des stats sur {n_samples} échantillons aléatoires...")
-        
-        indices = np.random.choice(len(self), n_samples, replace=False)
-        
-        inputs, targets = [], []
-        
-        for idx in indices:
-            x, y = self.__get_raw_item__(idx) 
-            
-            inputs.append(x)
-            targets.append(y)
-
-        inputs = torch.stack(inputs)
-        targets = torch.stack(targets)
-
-        self.stats = {
-            "input_mean": inputs.mean(0),
-            "input_std": inputs.std(0) + 1e-6,
-            "target_mean": targets.mean(0),
-            "target_std": targets.std(0) + 1e-6
-        }
-        if save:
-            stats_path = "climsim_norm_stats.pt" 
-            torch.save(self.stats, stats_path)
-            print(f"Stats sauvegardées dans {stats_path}")
-        
-        return self.stats
+        for var in self.output_vars:
+            var_name = var.replace("out_", "", 1)
+            self.ds[var_name] = self.ds[var] * self.output_scale[var_name]
 
 # %%
-BATCH_SIZE = 100
+BATCH_SIZE = 3072
 N_EPOCHS = 10
 
 FEATURES = {
     "features" :{
-        "tendancies" : ["in_state_t", "in_state_q0001", "in_state_u", "in_state_v"],
-        "surface" : ["in_pbuf_COSZRS", "in_pbuf_LHFLX", "in_pbuf_SHFLX", "in_pbuf_TAUX", "in_pbuf_TAUY", "in_pbuf_SOLIN"],
+        "tendancies" : ["in_state_t", "in_state_q0001", "in_state_ps"],
+        "surface" : ["in_pbuf_LHFLX", "in_pbuf_SHFLX", "in_pbuf_SOLIN"],
     },  
     "target" :{
-        "tendancies" : ["out_state_t"],
-        "surface" : ["out_cam_out_SOLL"]
+        "tendancies" : ["out_ptend_t", "out_ptend_q0001"],
+        "surface" : ["out_cam_out_NETSW", "out_cam_out_FLWDS", "out_cam_out_PRECSC", "out_cam_out_PRECC", "out_cam_out_SOLS", "out_cam_out_SOLL", "out_cam_out_SOLSD", "out_cam_out_SOLLD"]
     }
 }
 
-dataset = ClimSimZarrDataset(ZARR_PATH, LOW_RES_GRID_PATH, FEATURES, stats="climsim_norm_stats.pt")
-# dataset_stats = dataset.compute_norm_stats(n_samples=2000)
+print("Setting up dataset...")
 
+dataset = ClimSimZarrDataset(ZARR_PATH, LOW_RES_GRID_PATH, NORM_PATH, FEATURES, normalize=True)
 model_dims = dataset.get_models_dims(FEATURES)
 
+print("Dataset ready.")
+print(f"Model dimensions: {model_dims}")
 model = ClimSimMLP(input_dim=model_dims["input_total"], output_tendancies_dim=model_dims["output_tendancies"], output_surface_dim=model_dims["output_surface"])
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.RAdam(model.parameters(), lr=0.001)
 criterion = nn.MSELoss()
 
 # %%
@@ -343,6 +331,6 @@ for epoch in range(N_EPOCHS):
         
 
 # %%
-
+input_nc = xr.open_dataset("ClimSim/preprocessing/normalizations/inputs/input_mean.nc")
 
 
