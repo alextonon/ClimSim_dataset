@@ -16,3 +16,6 @@ checkpoints/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+#Ignorer les modèles
+models/.old/

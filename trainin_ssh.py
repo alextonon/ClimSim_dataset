@@ -37,10 +37,16 @@ class ClimSimMLP(nn.Module):
         
         # --- Output Heads ---
         self.head_tendencies = nn.Linear(128, output_tendancies_dim)
-        self.head_surface = nn.Linear(128, output_surface_dim)
+        # self.head_surface = nn.Linear(128, output_surface_dim)
         
         # LeakyReLU alpha=0.15
         self.activation = nn.LeakyReLU(0.15)
+        
+        for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight)
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
 
     def forward(self, x):
         # Pass through the 5 main hidden layers
@@ -57,11 +63,9 @@ class ClimSimMLP(nn.Module):
         out_linear = self.head_tendencies(x)
         
         # Output 2: Surface variables (ReLU activation)
-        out_relu = F.relu(self.head_surface(x))
+        # out_relu = F.relu(self.head_surface(x))
         
         # Concatenate along the feature dimension (dim=1)
-        return torch.cat([out_linear, out_relu], dim=1)
-
         return out_linear
 
 @torch.no_grad()
@@ -85,7 +89,7 @@ def evaluate_model(model, dataloader, criterion, device, input_dim, output_dim):
     average_loss = total_loss / total_samples
     return average_loss
 
-def train_one_epoch(model, dataloader, optimizer, criterion, device, input_dim, output_dim):
+def train_one_epoch(model, dataloader, optimizer,scheduler, criterion, device, input_dim, output_dim):
     model.train()
     total_loss = 0.0
     total_samples = 0
@@ -97,10 +101,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, input_dim, 
 
         inputs = inputs.view(-1, input_dim)  # Allow flattening for MLP
         targets = targets.view(-1, output_dim)
-    
-        indices = torch.randperm(inputs.size(0), device=device)
-        inputs = inputs[indices]
-        targets = targets[indices]
+
  
         optimizer.zero_grad()
         outputs = model(inputs)
@@ -108,15 +109,14 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, input_dim, 
         loss.backward()
         optimizer.step()
 
-
-        print(f"Pred Max: {outputs.max().item():.4f} | Target Max: {targets.max().item():.4f}")
-        
         batch_size = inputs.size(0)
         total_loss += loss.item() * batch_size
         total_samples += batch_size
         
         # Update progress bar description with current loss
         pbar.set_postfix({"loss": f"{loss.item():.6f}"})
+    
+    scheduler.step()
 
     return total_loss / total_samples
 
@@ -414,7 +414,7 @@ class ClimSimPyTorch(ClimSimBase, Dataset):
     
 
 # %%
-BATCH_SIZE = 50
+BATCH_SIZE = 200
 N_EPOCHS = 10
 
 FEATURES = {
@@ -424,7 +424,7 @@ FEATURES = {
     },  
     "target" :{
         "tendancies" : ["out_ptend_t", "out_ptend_q0001"],
-        "surface" : ["out_cam_out_NETSW", "out_cam_out_FLWDS", "out_cam_out_PRECSC", "out_cam_out_PRECC", "out_cam_out_SOLS", "out_cam_out_SOLL", "out_cam_out_SOLSD", "out_cam_out_SOLLD"]
+        "surface" : []
     }
 }
 
@@ -432,15 +432,31 @@ dataset = ClimSimPyTorch(ZARR_PATH, LOW_RES_GRID_PATH, NORM_PATH, FEATURES, norm
 model_dims = dataset.get_models_dims(FEATURES)
 
 model = ClimSimMLP(input_dim=model_dims["input_total"], output_tendancies_dim=model_dims["output_tendancies"], output_surface_dim=model_dims["output_surface"])
-optimizer = torch.optim.RAdam(model.parameters(), lr=0.001)
+optimizer = torch.optim.RAdam(model.parameters(), lr=2.5e-4)
 criterion = nn.MSELoss()
+from torch.optim.lr_scheduler import CyclicLR
 
+# Paramètres extraits de votre code Keras
+INIT_LR = 2.5e-4
+MAX_LR = 2.5e-3
+step_size = 2 * (len(dataset) // BATCH_SIZE) 
+
+scheduler = CyclicLR(
+    optimizer, 
+    base_lr=INIT_LR, 
+    max_lr=MAX_LR,
+    step_size_up=step_size,
+    mode='exp_range',
+    gamma=0.5, # Réduit l'amplitude de moitié à chaque cycle
+    cycle_momentum=False # RAdam ne gère pas toujours bien le momentum cyclique
+)
 # %%
 train, test = dataset.train_test_split(test_size=0.2, seed=42)
 
 train_loader = torch.utils.data.DataLoader(
     train, 
-    batch_size=BATCH_SIZE, 
+ 
+   batch_size=BATCH_SIZE, 
     shuffle=True,
     num_workers=4,
 )
@@ -474,13 +490,50 @@ def check_normalization(loader, name="Train"):
     if any(in_features.std(dim=0) > 2.0) or any(in_features.std(dim=0) < 0.5):
         print("\n⚠️ KRITIQUE : Certaines variables d'entrée n'ont pas un Std de 1.0 !")
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model.to(device)
+# On récupère UN SEUL batch et on s'arrête
+inputs, targets = next(iter(train_loader))
+inputs, targets = inputs.to(device), targets.to(device)
+
+inputs = inputs.view(-1, 124) 
+targets = targets.view(-1, 120)
+
+print(f"Nouvelle forme pour le modèle : {inputs.shape}")
+
+# Vérification cruciale
+print(f"Nouvelle forme inputs : {inputs.shape}") 
+# Si ici ce n'est pas [200, 124], ton modèle ClimSimMLP ne marchera jamais.
+
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+
+print(f"Test sur un batch de taille : {inputs.size(0)}")
+
+for epoch in range(100):  # On monte à 100 époques pour voir la courbe descendre
+    model.train()
+    optimizer.zero_grad()
+    
+    outputs = model(inputs)
+    loss = criterion(outputs, targets)
+    
+    loss.backward()
+    optimizer.step()
+
+
+    if (epoch + 1) % 10 == 0:
+        print(f"Epoch [{epoch+1}/100], Loss: {loss.item():.8f}")
+
+print("fin du test sur un batch unique.")
+
 check_normalization(train_loader, "Train")
 # %%
 for epoch in range(N_EPOCHS):
     train_loss = train_one_epoch(
         model, 
         train_loader, 
-        optimizer, 
+        optimizer,
+	scheduler, 
         criterion, 
         device="cpu",
         input_dim=model_dims["input_total"],
