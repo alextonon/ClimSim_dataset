@@ -12,6 +12,7 @@ My work mostly revolves arround data processing, model inference, and evaluation
 ## 🚀 Getting Started
 
 ### Prerequisites
+Warning : the number of libraries required is quite horrific, because of the torch and keras framework. If you don't want to run everything I can show you a proof that everything is working...
 * Python 3.12+
 * `xarray`, `numpy`, `pandas`, `matplotlib`, `torch`, `tensorflow`, `sklearn`, `h5netcdf`, `netcdf4`, `zarr`
 
