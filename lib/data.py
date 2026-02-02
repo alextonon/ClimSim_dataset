@@ -22,7 +22,7 @@ class ClimSimBase:
         self.output_vars = [v for v in self.features_list if 'out' in v]
 
     def __get_features__(self):
-        feat = np.concatenate([self.features["features"]["tendancies"], self.features["features"]["surface"]])
+        feat = np.concatenate([self.features["features"]["multilevel"], self.features["features"]["surface"]])
         target = np.concatenate([self.features["target"]["tendancies"], self.features["target"]["surface"]])
         return np.concatenate([feat, target])
 
