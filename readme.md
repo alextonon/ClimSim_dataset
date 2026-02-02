@@ -1,0 +1,21 @@
+# ClimSim Data Pipeline & Deep Learning Emulation
+**ISAE-SUPAERO | SDD Deep Learning Class**
+
+## 📌 Project Overview
+This project focuses on the implementation of a deep learning pipeline designed to emulate atmospheric physics using the **ClimSim dataset**. The goal is to bridge the gap between high-fidelity climate simulations and hybrid ML-physics models.
+
+The work mostly revolves arround data processing, model inference, and evaluation of results of a personaly trained Multi-Layer Perceptron (MLP) model. This pipeline has been rewritten but is inspired by the original **ClimSim-Keras** codebase.
+
+ I also tried **ERA5 reanalysis data**, interpolating it to the **E3SM model grid** (60 vertical levels), and performing inference using the pre trained MLP.
+
+
+## 🚀 Getting Started
+
+### Prerequisites
+* Python 3.12+
+* `xarray`, `numpy`, `pandas`, `matplotlib`, `torch`, `tensorflow`, `sklearn`, `h5netcdf`, `netcdf4`, `zarr`
+
+### Installation
+1. Clone the repository:
+   ```bash
+   git clone [https://github.com/alextonon/dataset.git](https://github.com/alextonon/dataset.git)
