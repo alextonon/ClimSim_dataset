@@ -2,8 +2,6 @@
 *.npy
 
 # Ignorer les dossiers de datasets entiers
-ClimSim_high-res/
-ClimSim_low-res/
 dataset_statistics/
 data/
 
@@ -16,6 +14,9 @@ checkpoints/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.pytest_cache/
+
+.vscode/
 
 #Ignorer les modèles
 models/.old/
